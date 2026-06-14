@@ -1,0 +1,18 @@
+__pycache__/
+# 聊天记录（含敏感信息）
+claude聊天记录.txt
+*.pyc
+.output/
+test_output/
+final_output/
+*.log
+.reasonix/
+tophub_page.html
+tophub_playwright.txt
+tophub_results.json
+after_click.html
+after_weibo_click.txt
+tophub_all.txt
+tophub_debug.png
+xhs_debug.txt
+xhs_explore.txt
