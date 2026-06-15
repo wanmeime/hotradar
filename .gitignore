@@ -6,6 +6,7 @@ claude聊天记录.txt
 test_output/
 final_output/
 *.log
+test_*/
 .reasonix/
 tophub_page.html
 tophub_playwright.txt
