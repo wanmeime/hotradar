@@ -8,6 +8,7 @@
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -16,6 +17,7 @@ from typing import List, Dict
 
 from config import setup_logging
 from platforms import TophubSpider, XiaoHongShuSpider
+from platforms.content import ContentFetcher
 
 # 飞书群配置
 FEISHU_CHAT_ID = "oc_d2e8df3c676afa2c352d8ece0a9b6141"
@@ -194,6 +196,20 @@ def send_feishu_card(data: List[Dict], logger) -> bool:
         return False
 
 
+def save_content(data: List[Dict], output_dir: Path) -> str:
+    """保存正文素材到文件，返回文件路径"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # 用标题做文件名
+    title = data.get("title", "untitled")[:30]
+    safe_name = re.sub(r'[\\/:*?"<>|]', "", title).strip()
+    today = datetime.now().strftime("%Y%m%d")
+    out = output_dir / f"{today}-{safe_name}.md"
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(data.get("content", ""))
+    return str(out)
+
+
 def main():
     parser = argparse.ArgumentParser(description="HotRadar - 国内热点监控")
     parser.add_argument("--platform", "-p",
@@ -202,6 +218,16 @@ def main():
                         help="输出目录 (默认: output/)")
     parser.add_argument("--format", choices=["json", "smcc", "all"], default="all",
                         help="输出格式")
+
+    # Phase 2 参数
+    parser.add_argument("--content", "-c",
+                        help="[Phase 2] 抓取指定选题的正文内容")
+    parser.add_argument("--content-url", "-u",
+                        help="[Phase 2] 选题的已知 URL")
+    parser.add_argument("--content-platform", "-cp",
+                        default="auto",
+                        help="[Phase 2] 选题来源平台 (zhihu/weibo/auto)")
+
     parser.add_argument("--no-feishu", action="store_true",
                         help="不发送飞书消息")
     parser.add_argument("--no-smcc", action="store_true",
@@ -210,6 +236,36 @@ def main():
 
     logger = setup_logging()
 
+    # =========================================
+    # Phase 2：抓取选题正文
+    # =========================================
+    if args.content:
+        logger.info(f"Phase 2: 抓取选题正文 — {args.content}")
+        fetcher = ContentFetcher(logger)
+        markdown = fetcher.fetch(
+            title=args.content,
+            url=args.content_url or "",
+        )
+        output = {
+            "title": args.content,
+            "platform": args.content_platform,
+            "content": markdown,
+            "fetched_at": datetime.now().isoformat(),
+        }
+        filepath = save_content(output, Path(args.output) / "content")
+        logger.info(f"素材输出: {filepath}")
+        print(f"\n{'='*60}")
+        print(f"📄 素材文件: {filepath}")
+        print(f"{'='*60}")
+        # 也打印前 500 字符预览
+        print(markdown[:500])
+        if len(markdown) > 500:
+            print(f"\n... (共 {len(markdown)} 字符，完整内容见文件)")
+        return 0
+
+    # =========================================
+    # Phase 1：抓取热点标题（原有逻辑）
+    # =========================================
     platform_map = {"weibo": "tophub", "douyin": "tophub",
                     "zhihu": "tophub", "xiaohongshu": "xhs"}
 

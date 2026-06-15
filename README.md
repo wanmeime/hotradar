@@ -69,6 +69,57 @@ lark-cli im +messages-send \
 
 ---
 
+## Phase 2：选题正文内容抓取
+
+当 Phase 1 的热点标题被选中后，写作 Agent 可以调用此功能抓取完整正文作为素材。
+
+### 使用方式
+
+```bash
+# 给定标题 + URL 抓取正文
+python main.py --content "选题标题" --content-url "https://..."
+
+# 只给 URL（自动提取正文）
+python main.py --content-url "https://news.sina.com.cn/xxx"
+
+# 指定输出目录
+python main.py --content "标题" --content-url "..." --output /素材目录
+```
+
+### 输出
+
+素材文件保存在 `output/content/YYYYMMDD-标题.md`，格式：
+
+```markdown
+# 文章标题
+
+**来源：** chinanews.com
+**原文链接：** https://...
+**抓取时间：** 2026-06-16 10:00
+
+---
+
+正文内容...
+
+---
+
+*🤖 HotRadar 内容抓取 · 2026-06-16 10:00*
+```
+
+### 技术实现
+
+`platforms/content.py` 使用三层提取：
+1. **requests + trafilatura** — 快速提取普通网页正文
+2. **Playwright 渲染 + trafilatura** — 处理 JS 动态页面
+3. 输出标准化 Markdown 素材格式
+
+### 限制
+
+- **知乎 / 微博 / 小红书**：反爬严格，URL 直提取消率低
+- 写作 Agent 可通过 web_search 找到原文 URL 后传入
+
+---
+
 ## 项目架构
 
 ```
