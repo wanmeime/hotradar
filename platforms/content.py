@@ -12,44 +12,44 @@
     fetcher = ContentFetcher(logger)
     md = fetcher.fetch(url="https://...")
 """
-import re
 from datetime import datetime
 from urllib.parse import urlparse
 
-import requests
 import trafilatura
+from scrapling.fetchers import Fetcher
 from playwright.sync_api import sync_playwright
 
 from .base import BaseSpider, HotItem
 
 
-def _download(url: str, timeout: int = 15) -> str:
-    """下载 URL 内容（自动处理编码）"""
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/126.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,*/*;q=0.9",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-    }
-    resp = requests.get(url, headers=headers, timeout=timeout)
-    resp.encoding = resp.apparent_encoding or "utf-8"
-    if resp.status_code == 200:
-        return resp.text
+def _download(url: str, timeout: int = 20) -> str:
+    """用 Scrapling 下载 URL 内容
+
+    Scrapling 比 requests 多了 stealthy_headers、浏览器指纹伪装等反爬能力。
+    """
+    try:
+        page = Fetcher.get(url, timeout=timeout, follow_redirects=True)
+        if page.status == 200 and len(page.text) > 100:
+            return page.text
+    except Exception:
+        pass
     return ""
 
 
 def extract_from_url(url: str, logger=None) -> str:
-    """从 URL 提取正文，返回 Markdown 格式素材文档"""
+    """从 URL 提取正文，返回 Markdown 格式素材文档
+
+    提取策略（层层递进）：
+    1. Scrapling Fetcher（含 stealth 伪装）→ trafilatura 提取
+    2. Playwright 渲染 → trafilatura 提取
+    """
     domain = urlparse(url).netloc.replace("www.", "")
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     if logger:
         logger.info(f"提取正文: {url}")
 
-    # 1) requests 下载 + trafilatura 提取
+    # 第1层：Scrapling 下载（自带 stealthy_headers、浏览器指纹伪装）
     html = _download(url)
     if html:
         body = trafilatura.extract(
@@ -60,12 +60,14 @@ def extract_from_url(url: str, logger=None) -> str:
             include_tables=True,
             favor_precision=True,
         )
-        if body and len(body) > 50:
+        if body and len(body) > 80:
             if logger:
-                logger.info(f"  提取成功: {len(body)} 字符")
+                logger.info(f"  Scrapling 提取成功: {len(body)} 字符")
             return _make_material(body, url, domain, now)
+        elif logger:
+            logger.info(f"  Scrapling 拿到 HTML 但未提取到正文 ({len(html)} bytes)")
 
-    # 2) Playwright 渲染（处理 JS 动态页面）
+    # 第2层：Playwright 浏览器渲染（处理 JS 动态页面、反爬页面）
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -76,11 +78,10 @@ def extract_from_url(url: str, logger=None) -> str:
             browser.close()
 
         body = trafilatura.extract(html, output_format="markdown")
-        if body and len(body) > 50:
+        if body and len(body) > 80:
             if logger:
                 logger.info(f"  Playwright 渲染提取: {len(body)} 字符")
             return _make_material(body, url, domain, now)
-
     except Exception as e:
         if logger:
             logger.warning(f"  Playwright 提取失败: {e}")
