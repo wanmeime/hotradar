@@ -4,7 +4,7 @@
 抓取微博/知乎/抖音热榜，输出到：
 1. 本地文件（JSON + SMCC Markdown）
 2. SMCC 项目原料库
-3. 飞书群通知（含完整热点内容）
+3. 飞书群卡片消息
 """
 import argparse
 import json
@@ -21,17 +21,22 @@ from platforms import TophubSpider, XiaoHongShuSpider
 FEISHU_CHAT_ID = "oc_d2e8df3c676afa2c352d8ece0a9b6141"
 # SMCC 原料库路径
 SMCC_RAW_DIR = Path("/home/jiaod/smcc/00-原料/热点调研")
+# 各平台中文名
+PLATFORM_NAMES = {
+    "weibo": "微博热搜榜",
+    "douyin": "抖音总榜",
+    "zhihu": "知乎热榜",
+    "xiaohongshu": "小红书",
+}
 
 
 def save_output(data: List[Dict], output_dir: Path) -> Path:
     """保存 JSON 到指定目录"""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     today = datetime.now().strftime("%Y%m%d")
     output_file = output_dir / f"{today}.json"
 
-    # 如果文件已存在，先读取并合并
     if output_file.exists():
         with open(output_file, "r", encoding="utf-8") as f:
             existing = json.load(f)
@@ -53,126 +58,130 @@ def save_output(data: List[Dict], output_dir: Path) -> Path:
 
 
 def export_smcc_content(data: List[Dict]) -> str:
-    """生成 SMCC 标准格式的热点速览 markdown 内容"""
+    """生成 SMCC 标准格式 Markdown（带表格，用于文件存档）"""
     today = datetime.now().strftime("%Y-%m-%d")
     now = datetime.now().strftime("%H:%M")
-
     lines = [f"# 热点速览 — {today} {now}\n"]
 
-    platform_names = {
-        "weibo": "微博",
-        "douyin": "抖音",
-        "zhihu": "知乎",
-        "xiaohongshu": "小红书",
-    }
+    by_platform = _group_by_platform(data)
 
-    # 按平台分组
-    platforms_dict = {}
-    for item in data:
-        p = item["platform"]
-        if p not in platforms_dict:
-            platforms_dict[p] = []
-        platforms_dict[p].append(item)
-
-    for platform_key in ["weibo", "douyin", "zhihu", "xiaohongshu"]:
-        if platform_key not in platforms_dict:
+    for pk in ["weibo", "douyin", "zhihu", "xiaohongshu"]:
+        if pk not in by_platform:
             continue
-        items = platforms_dict[platform_key]
-        items.sort(key=lambda x: x["rank"])
-
-        lines.append(f"## {platform_names.get(platform_key, platform_key)}\n")
+        items = sorted(by_platform[pk], key=lambda x: x["rank"])
+        lines.append(f"## {PLATFORM_NAMES.get(pk, pk)}\n")
         lines.append("| 排名 | 标题 | 热度 |")
         lines.append("|:---:|------|------|")
-
         for item in items[:10]:
             title = item["title"].replace("|", "\\|")
             heat = item.get("heat", "")
             lines.append(f"| {item['rank']} | {title} | {heat} |")
-        lines.append("\n")
-
-    return "\n".join(lines)
-
-
-def save_smcc_file(content: str, output_dir: Path) -> Path:
-    """保存 SMCC Markdown 文件"""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    today = datetime.now().strftime("%Y-%m-%d")
-    output_file = output_dir / f"{today}.md"
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(content)
-    return output_file
-
-
-def export_feishu_text(data: List[Dict]) -> str:
-    """生成适合飞书阅读的纯文本格式（无表格，减少转义问题）"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    now = datetime.now().strftime("%H:%M")
-
-    platform_names = {
-        "weibo": "微博热搜榜",
-        "douyin": "抖音总榜",
-        "zhihu": "知乎热榜",
-        "xiaohongshu": "小红书",
-    }
-
-    # 按平台分组
-    platforms_dict = {}
-    for item in data:
-        p = item["platform"]
-        if p not in platforms_dict:
-            platforms_dict[p] = []
-        platforms_dict[p].append(item)
-
-    lines = [f"🔥 热点速览 — {today} {now}\n"]
-
-    for platform_key in ["weibo", "douyin", "zhihu", "xiaohongshu"]:
-        if platform_key not in platforms_dict:
-            continue
-        items = platforms_dict[platform_key]
-        items.sort(key=lambda x: x["rank"])
-
-        lines.append(f"━━ {platform_names.get(platform_key, platform_key)} ━━")
-        for item in items[:10]:
-            heat = item.get("heat", "")
-            heat_str = f" [{heat}]" if heat else ""
-            lines.append(f"#{item['rank']} {item['title']}{heat_str}")
         lines.append("")
 
     return "\n".join(lines)
 
 
-def send_to_feishu(text: str, logger) -> bool:
-    """通过 lark-cli 发送纯文本消息到飞书群"""
+def save_smcc_file(content: str, output_dir: Path) -> Path:
+    """保存 Markdown 文件"""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = output_dir / f"{today}.md"
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(content)
+    return out
+
+
+def _group_by_platform(data: List[Dict]) -> Dict[str, list]:
+    """按平台分组"""
+    grouped = {}
+    for item in data:
+        grouped.setdefault(item["platform"], []).append(item)
+    return grouped
+
+
+def build_feishu_card(data: List[Dict]) -> str:
+    """构建飞书卡片消息 JSON
+
+    卡片结构：
+    - header: 标题 + 时间
+    - 每个平台一个 markdown 区块，用分割线隔开
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%H:%M")
+
+    elements = []
+    by_platform = _group_by_platform(data)
+    first = True
+
+    for pk in ["weibo", "douyin", "zhihu", "xiaohongshu"]:
+        if pk not in by_platform:
+            continue
+        items = sorted(by_platform[pk], key=lambda x: x["rank"])
+
+        # 分隔线（第一个平台前不画）
+        if not first:
+            elements.append({"tag": "hr"})
+        first = False
+
+        # 平台标题行
+        name = PLATFORM_NAMES.get(pk, pk)
+        platform_header = f"**{name}**"
+
+        # 前 10 条热点
+        item_lines = []
+        for item in items[:10]:
+            heat = item.get("heat", "")
+            heat_str = f"  `{heat}`" if heat else ""
+            # 标题中的特殊字符转义
+            title = item["title"].replace("*", "\\*").replace("`", "\\`")
+            item_lines.append(f"{item['rank']}. {title}{heat_str}")
+
+        md_content = platform_header + "\n" + "\n".join(item_lines)
+
+        elements.append({
+            "tag": "markdown",
+            "content": md_content,
+        })
+
+    # 底部提示
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "note",
+        "elements": [{
+            "tag": "plain_text",
+            "content": f"🤖 HotRadar 自动抓取 · {today} {now}"
+        }]
+    })
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": f"🔥 热点速览 — {today}"
+            },
+            "template": "blue",
+        },
+        "elements": elements,
+    }
+
+    return json.dumps(card, ensure_ascii=False)
+
+
+def send_feishu_card(data: List[Dict], logger) -> bool:
+    """发送飞书卡片消息"""
+    card_json = build_feishu_card(data)
     try:
         result = subprocess.run(
             ["lark-cli", "im", "+messages-send",
              "--chat-id", FEISHU_CHAT_ID,
-             "--text", text],
+             "--msg-type", "interactive",
+             "--content", card_json],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
-            logger.info("飞书消息发送成功")
-            return True
-        else:
-            logger.error(f"飞书发送失败: {result.stderr}")
-            return False
-    except FileNotFoundError:
-        logger.error("lark-cli 未安装，无法发送飞书消息")
-        return False
-    except Exception as e:
-        logger.error(f"飞书发送异常: {e}")
-        return False
-    """通过 lark-cli 发送热点速览到飞书群"""
-    try:
-        result = subprocess.run(
-            ["lark-cli", "im", "+messages-send",
-             "--chat-id", FEISHU_CHAT_ID,
-             "--markdown", content],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            logger.info("飞书消息发送成功")
+            logger.info("飞书卡片消息发送成功")
             return True
         else:
             logger.error(f"飞书发送失败: {result.stderr}")
@@ -188,7 +197,7 @@ def send_to_feishu(text: str, logger) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="HotRadar - 国内热点监控")
     parser.add_argument("--platform", "-p",
-                        help="指定平台，逗号分隔 (weibo,douyin,zhihu)")
+                        help="指定平台 (weibo,douyin,zhihu)")
     parser.add_argument("--output", "-o", default="output",
                         help="输出目录 (默认: output/)")
     parser.add_argument("--format", choices=["json", "smcc", "all"], default="all",
@@ -201,21 +210,16 @@ def main():
 
     logger = setup_logging()
 
-    # 解析平台
-    platform_map = {
-        "weibo": "tophub",
-        "douyin": "tophub",
-        "zhihu": "tophub",
-        "xiaohongshu": "xhs",
-    }
+    platform_map = {"weibo": "tophub", "douyin": "tophub",
+                    "zhihu": "tophub", "xiaohongshu": "xhs"}
 
     if args.platform:
         selected = [p.strip() for p in args.platform.split(",")]
     else:
         selected = list(platform_map.keys())
 
-    tophub_selected = [p for p in selected if platform_map.get(p) == "tophub"]
-    xhs_selected = [p for p in selected if platform_map.get(p) == "xhs"]
+    tophub_selected = [p for p in selected if platform_map[p] == "tophub"]
+    xhs_selected = [p for p in selected if platform_map[p] == "xhs"]
 
     all_data = []
 
@@ -223,8 +227,7 @@ def main():
     if tophub_selected:
         spider = TophubSpider(logger, platforms=tophub_selected)
         try:
-            items = spider.fetch()
-            for item in items:
+            for item in spider.fetch():
                 all_data.append({
                     "platform": item.platform,
                     "title": item.title,
@@ -237,11 +240,9 @@ def main():
             logger.error(f"tophub 抓取失败: {e}")
 
     # 2) 小红书
-    for platform_key in xhs_selected:
+    for _ in xhs_selected:
         try:
-            spider = XiaoHongShuSpider(logger)
-            items = spider.fetch()
-            for item in items:
+            for item in XiaoHongShuSpider(logger).fetch():
                 all_data.append({
                     "platform": item.platform,
                     "title": item.title,
@@ -251,7 +252,7 @@ def main():
                     "fetched_at": item.fetched_at,
                 })
         except Exception as e:
-            logger.error(f"{platform_key} 抓取失败: {e}")
+            logger.error(f"小红书抓取失败: {e}")
 
     if not all_data:
         logger.error("未抓取到任何数据")
@@ -259,31 +260,25 @@ def main():
 
     logger.info(f"共抓取 {len(all_data)} 条热点数据")
 
-    # === 输出 ===
     output_dir = Path(args.output)
 
-    # 1) JSON
+    # JSON
     if args.format in ("json", "all"):
-        json_file = save_output(all_data, output_dir)
-        logger.info(f"JSON 输出: {json_file}")
+        f = save_output(all_data, output_dir)
+        logger.info(f"JSON 输出: {f}")
 
-    # 2) SMCC Markdown
+    # SMCC Markdown
     if args.format in ("smcc", "all"):
-        smcc_content = export_smcc_content(all_data)
-
-        # 保存到输出目录
-        f1 = save_smcc_file(smcc_content, output_dir / "smcc")
+        smcc = export_smcc_content(all_data)
+        f1 = save_smcc_file(smcc, output_dir / "smcc")
         logger.info(f"SMCC 输出: {f1}")
-
-        # 保存到 SMCC 项目原料库
         if not args.no_smcc and SMCC_RAW_DIR.exists():
-            f2 = save_smcc_file(smcc_content, SMCC_RAW_DIR)
+            f2 = save_smcc_file(smcc, SMCC_RAW_DIR)
             logger.info(f"原料库: {f2}")
 
-        # 发送到飞书（纯文本格式，更适合阅读）
-        if not args.no_feishu:
-            feishu_text = export_feishu_text(all_data)
-            send_to_feishu(feishu_text, logger)
+    # 飞书卡片
+    if not args.no_feishu:
+        send_feishu_card(all_data, logger)
 
     return 0
 
