@@ -104,7 +104,65 @@ def save_smcc_file(content: str, output_dir: Path) -> Path:
     return output_file
 
 
-def send_to_feishu(content: str, logger) -> bool:
+def export_feishu_text(data: List[Dict]) -> str:
+    """生成适合飞书阅读的纯文本格式（无表格，减少转义问题）"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now().strftime("%H:%M")
+
+    platform_names = {
+        "weibo": "微博热搜榜",
+        "douyin": "抖音总榜",
+        "zhihu": "知乎热榜",
+        "xiaohongshu": "小红书",
+    }
+
+    # 按平台分组
+    platforms_dict = {}
+    for item in data:
+        p = item["platform"]
+        if p not in platforms_dict:
+            platforms_dict[p] = []
+        platforms_dict[p].append(item)
+
+    lines = [f"🔥 热点速览 — {today} {now}\n"]
+
+    for platform_key in ["weibo", "douyin", "zhihu", "xiaohongshu"]:
+        if platform_key not in platforms_dict:
+            continue
+        items = platforms_dict[platform_key]
+        items.sort(key=lambda x: x["rank"])
+
+        lines.append(f"━━ {platform_names.get(platform_key, platform_key)} ━━")
+        for item in items[:10]:
+            heat = item.get("heat", "")
+            heat_str = f" [{heat}]" if heat else ""
+            lines.append(f"#{item['rank']} {item['title']}{heat_str}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def send_to_feishu(text: str, logger) -> bool:
+    """通过 lark-cli 发送纯文本消息到飞书群"""
+    try:
+        result = subprocess.run(
+            ["lark-cli", "im", "+messages-send",
+             "--chat-id", FEISHU_CHAT_ID,
+             "--text", text],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            logger.info("飞书消息发送成功")
+            return True
+        else:
+            logger.error(f"飞书发送失败: {result.stderr}")
+            return False
+    except FileNotFoundError:
+        logger.error("lark-cli 未安装，无法发送飞书消息")
+        return False
+    except Exception as e:
+        logger.error(f"飞书发送异常: {e}")
+        return False
     """通过 lark-cli 发送热点速览到飞书群"""
     try:
         result = subprocess.run(
@@ -222,9 +280,10 @@ def main():
             f2 = save_smcc_file(smcc_content, SMCC_RAW_DIR)
             logger.info(f"原料库: {f2}")
 
-        # 发送到飞书
+        # 发送到飞书（纯文本格式，更适合阅读）
         if not args.no_feishu:
-            send_to_feishu(smcc_content, logger)
+            feishu_text = export_feishu_text(all_data)
+            send_to_feishu(feishu_text, logger)
 
     return 0
 
