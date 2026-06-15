@@ -56,7 +56,7 @@ def extract_from_url(url: str, logger=None) -> str:
             html,
             output_format="markdown",
             include_links=True,
-            include_images=False,
+            include_images=True,
             include_tables=True,
             favor_precision=True,
         )
@@ -77,7 +77,14 @@ def extract_from_url(url: str, logger=None) -> str:
             html = page.content()
             browser.close()
 
-        body = trafilatura.extract(html, output_format="markdown")
+        body = trafilatura.extract(
+                html,
+                output_format="markdown",
+                include_links=True,
+                include_images=True,
+                include_tables=True,
+                favor_precision=True,
+            )
         if body and len(body) > 80:
             if logger:
                 logger.info(f"  Playwright 渲染提取: {len(body)} 字符")
